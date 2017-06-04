@@ -94,48 +94,211 @@ let
     smtpd_use_tls = true;
   } else {});
 
-  masterCf = ''
+  masterCfOptions = { lib, ... }: with lib;
+    {
+      options = {
+        type = mkOption {
+          type = types.enum [ "inet" "unix" "fifo" "pass" ];
+          default = "unix";
+          example = "inet";
+          description = "The type of the service";
+        };
+        private = mkOption {
+          type = types.bool;
+          default = true;
+          example = false;
+          description = ''
+            Whether the service's sockets and storage directory is restricted to
+            be only available via the mail system.
+          '';
+        };
+        unpriv = mkOption {
+          type = types.bool;
+          default = true;
+          example = false;
+          description = "";
+        };
+        chroot = mkOption {
+          type = types.bool;
+          default = false;
+          example = true;
+          description = ''
+            Whether the service is chrooted to have only access to the
+            ${optDoc "queueDir"} and the closure of store paths specified by the
+            <option>program</option> option.
+          '';
+        };
+        wakeup = mkOption {
+          type = types.int;
+          default = 0;
+          example = 60;
+          description = ''
+            Automatically wake up the service after the specified number of
+            seconds. If <literal>0</literal> is given, never wake the service up.
+          '';
+        };
+        wakeupUnusedComponent = mkOption {
+          type = types.bool;
+          default = true;
+          example = false;
+          description = ''
+            If set to <literal>false</literal> the component will only be woken up if it is used.
+            This is equivalent to postfix' notion of adding a question mark
+            behind the wakeup time in <filename>master.cf</filename>
+          '';
+        };
+        maxproc = mkOption {
+          type = types.int;
+          default = 100;
+          example = 1;
+          description = ''
+            The maximum number of processes to spawn for this service.
+            If the value is <literal>0</literal> it doesn't have any limit.
+          '';
+        };
+        command = mkOption {
+          type = types.str;
+          example = "smtpd";
+          description = ''
+            A program name specifying a Postfix service/daemon process.
+          '';
+        };
+        args = mkOption {
+          type = types.listOf types.str;
+          default = [];
+          example = [ "-o" "smtp_helo_timeout=5" ];
+          description = ''
+            Arguments to pass to the <option>command</option>. There is no shell
+            processing involved and shell syntax is passed verbatim to the
+            process.
+          '';
+        };
+      };
+    };
+
+  masterCf = {
+    smtp = {
+      type = "inet";
+      private = false;
+      command = "smtpd";
+    };
+    submission = mkIf (cfg.enableSubmission) {
+      type = "inet";
+      private = false;
+      command = "smtpd";
+      args = flatten (mapAttrsToList (x: y: ["-o" (x + "=" + y)]) cfg.submissionOptions);
+    };
+    pickup = {
+      private = false;
+      wakeup = 60;
+      maxproc = 1;
+      command = "pickup";
+    };
+    cleanup = {
+      private = false;
+      maxproc = 0;
+      command = "cleanup";
+    };
+    qmgr = {
+      private = false;
+      wakeup = 300;
+      maxproc = 1;
+      command = "qmgr";
+    };
+    tlsmgr = {
+      wakeup = 1000;
+      wakeupUnusedComponent = false;
+      maxproc = 1;
+      command = "tlsmgr";
+    };
+    rewrite = {
+      command = "trivial-rewrite";
+    };
+    bounce = {
+      maxproc = 0;
+      command = "bounce";
+    };
+    defer = {
+      maxproc = 0;
+      command = "bounce";
+    };
+    trace = {
+      maxproc = 0;
+      command = "bounce";
+    };
+    verify = {
+      maxproc = 1;
+      command = "verify";
+    };
+    flush = {
+      private = false;
+      wakeup = 1000;
+      wakeupUnusedComponent = false;
+      maxproc = 0;
+      command = "flush";
+    };
+    proxymap = {
+      command = "proxymap";
+    };
+    proxywrite = {
+      maxproc = 1;
+      command = "proxymap";
+    };
+    smtp = mkIf cfg.enableSmtp {
+      command = "smtp";
+    };
+    relay = mkIf cfg.enableSmtp {
+      command = "smtp";
+      args = [ "-o" "smtp_fallback_relay=" ];
+    };
+    showq = {
+      private = false;
+      command = "showq";
+    };
+    error = {
+      command = "error";
+    };
+    retry = {
+      command = "error";
+    };
+    discard = {
+      command = "discard";
+    };
+    local = {
+      unpriv = false;
+      command = "local";
+    };
+    virtual = {
+      unpriv = false;
+      command = "virtual";
+    };
+    lmtp = {
+      command = "lmtp";
+    };
+    anvil = {
+      maxproc = 1;
+      command = "anvil";
+    };
+    scache = {
+      maxproc = 1;
+      command = "scache";
+    };
+  };
+
+  masterCfHeader = ''
     # ==========================================================================
     # service type  private unpriv  chroot  wakeup  maxproc command + args
     #               (yes)   (yes)   (no)    (never) (100)
     # ==========================================================================
-    smtp      inet  n       -       n       -       -       smtpd
-  '' + optionalString cfg.enableSubmission ''
-    submission inet n       -       n       -       -       smtpd
-      ${concatStringsSep "\n  " (mapAttrsToList (x: y: "-o " + x + "=" + y) cfg.submissionOptions)}
-  ''
-  + ''
-    pickup    unix  n       -       n       60      1       pickup
-    cleanup   unix  n       -       n       -       0       cleanup
-    qmgr      unix  n       -       n       300     1       qmgr
-    tlsmgr    unix  -       -       n       1000?   1       tlsmgr
-    rewrite   unix  -       -       n       -       -       trivial-rewrite
-    bounce    unix  -       -       n       -       0       bounce
-    defer     unix  -       -       n       -       0       bounce
-    trace     unix  -       -       n       -       0       bounce
-    verify    unix  -       -       n       -       1       verify
-    flush     unix  n       -       n       1000?   0       flush
-    proxymap  unix  -       -       n       -       -       proxymap
-    proxywrite unix -       -       n       -       1       proxymap
-  ''
-  + optionalString cfg.enableSmtp ''
-    smtp      unix  -       -       n       -       -       smtp
-    relay     unix  -       -       n       -       -       smtp
-    	      -o smtp_fallback_relay=
-    #       -o smtp_helo_timeout=5 -o smtp_connect_timeout=5
-  ''
-  + ''
-    showq     unix  n       -       n       -       -       showq
-    error     unix  -       -       n       -       -       error
-    retry     unix  -       -       n       -       -       error
-    discard   unix  -       -       n       -       -       discard
-    local     unix  -       n       n       -       -       local
-    virtual   unix  -       n       n       -       -       virtual
-    lmtp      unix  -       -       n       -       -       lmtp
-    anvil     unix  -       -       n       -       1       anvil
-    scache    unix  -       -       n       -       1       scache
-    ${cfg.extraMasterConf}
   '';
+  masterCfContent = let
+    mkBool = b: if b == true then "y" else "n";
+    mkWakeup = time: qm: toString time + if qm == true then "" else "?";
+    mkArgs = lib.concatStringsSep " "
+    mkEntry = name: { type, private, unpriv, chroot, wakeup, wakeupUnusedComponent, maxproc, command, args }:
+                "${name} ${type} ${mkBool private} ${mkBool unpriv} ${mkBool chroot}" +
+                "${mkWakeup wakeup wakeupUnusedComponent} ${toString maxproc} ${command} ${mkArgs args}";
+  in masterCfHeader + lib.concatStringsSep "\n" (lib.mapAttrsToList mkEntry cfg.masterCf) + "\n" + cfg.extraMasterConf;
 
   aliases =
     optionalString (cfg.postmasterAlias != "") ''
@@ -151,7 +314,7 @@ let
   virtualFile = pkgs.writeText "postfix-virtual" cfg.virtual;
   checkClientAccessFile = pkgs.writeText "postfix-check-client-access" cfg.dnsBlacklistOverrides;
   mainCfFile = pkgs.writeText "postfix-main.cf" mainCf;
-  masterCfFile = pkgs.writeText "postfix-master.cf" masterCf;
+  masterCfFile = pkgs.writeText "postfix-master.cf" masterCfContent;
   transportFile = pkgs.writeText "postfix-transport" cfg.transport;
 
 in
@@ -178,7 +341,7 @@ in
       enableSubmission = mkOption {
         type = types.bool;
         default = false;
-        description = "Whether to enable smtp submission";
+        description = "Whether to enable smtp submission.";
       };
 
       submissionOptions = mkOption {
@@ -398,6 +561,22 @@ in
       dnsBlacklistOverrides = mkOption {
         default = "";
         description = "contents of check_client_access for overriding dnsBlacklists";
+      };
+
+      masterConfig = mkOption {
+        type = types.attrsOf (types.submodule masterCfOptions);
+        default = masterCf;
+        example =
+          { submission = {
+              type = "inet";
+              args = [ "-o" "smtpd_tls_security_level=encrypt" ];
+            }
+          };
+        description = ''
+          An attribute set of service options, which correspond to the service
+          definitions usually done within the Postfix
+          <filename>master.cf</filename> file.
+        '';
       };
 
       extraMasterConf = mkOption {
